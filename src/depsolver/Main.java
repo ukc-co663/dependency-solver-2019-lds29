@@ -30,80 +30,53 @@ class Package {
 public class Main {
     private static List<Package> toInstall = new ArrayList<Package>();
     private static List<Package> toUninstall = new ArrayList<Package>();
-    private static List<String> commands = new ArrayList<String>();;
+    private static List<String> commands = new ArrayList<String>();
+    private static List<Package> ignore = new ArrayList<Package>();
+    private static List<Package> initialPacks = new ArrayList<Package>();
   public static void main(String[] args) throws IOException {
     TypeReference<List<Package>> repoType = new TypeReference<List<Package>>() {};
     List<Package> repo = JSON.parseObject(readFile(args[0]), repoType);
     TypeReference<List<String>> strListType = new TypeReference<List<String>>() {};
     List<String> initial = JSON.parseObject(readFile(args[1]), strListType);
     List<String> constraints = JSON.parseObject(readFile(args[2]), strListType);
-
-    //Debug Print
-    /*for (Package p : repo) {
-      System.out.printf("package %s version %s\n", p.getName(), p.getVersion());
-      for (List<String> clause : p.getDepends()) {
-        System.out.printf("  dep:");
-        for (String q : clause) {
-          System.out.printf(" %s", q);
-        }
-        System.out.printf("\n");
-      }
-    }
-    //Print initial as strings
-    System.out.printf("Initial: ");
-    for (String i : initial) {
-    	System.out.printf(" %s", i);
-    }
-    System.out.printf("\n");
-    //Print positive constraints as strings
-    System.out.printf("Positive constraints: ");
-    for (String i : constraints) {
-    	if(shouldInstall(i)) 
-    	{
-    		String[] split = i.split("\\+");
-    		System.out.printf(" %s", split[1]);
-    	}
-    }
-    System.out.printf("\n");
-    //Print negative constraints as strings
-    System.out.printf("Negative constraints: ");
-    for (String i : constraints) {
-    	if(!shouldInstall(i)) 
-    	{
-    		String[] split = i.split("\\-");
-    		System.out.printf(" %s", split[1]);
-    	}
-    }
-    System.out.printf("\n");
-    */
     
-    //Remove negative constraints from initial
+    //Define cost
+    long cost = 0;
     
-    //Check positive constraints
+    initialPacks(repo, initial);
+    //Check positive and negative constraints
     if (constraints != null) {
     	for (String i : constraints) {
-        	if(shouldInstall(i)) 
-        	{
+        	if(shouldInstall(i)) {
         		String[] split = i.split("\\+");
-        		String pack = split[1];
+        		String constraint = split[1];
         		for (Package rep : repo) {
-        			if (rep.getName().equals(pack)) {
-        				//Install
-        				install(rep, repo);
+        			if (rep.getName().equals(constraint)) {
+        				install(rep, repo, constraint, ignore, initial);
+        			}
+        		}
+        	}
+        	else {
+        		String[] split = i.split("\\-");
+        		String constraint = split[1];
+        		for (Package rep : repo) {
+        			if (rep.getName().equals(constraint)) {
+        				uninstall(rep, repo);
         			}
         		}
         	}
     	}
     }
-    //Debug answer print
-    /*    
-    System.out.printf("final:\n");
-    for (Package p : toInstall) {
-        System.out.printf("package %s version %s\n", p.getName(), p.getVersion());
-    }*/
     writeCommands(toInstall,toUninstall);
     String res = JSON.toJSONString(commands, true);
     System.out.println(commands);
+    for (Package installed : toInstall) {
+    	cost = cost + installed.getSize();
+    }
+    for (Package installed : toUninstall) {
+    	cost = cost + 1000000;
+    }
+    //System.out.println("Cost:" + cost);
   }
 
   static String readFile(String filename) throws IOException {
@@ -124,21 +97,43 @@ public class Main {
 	  
   }
   
-  private static void install (Package rep, List<Package> repo) {
+  private static void install (Package rep, List<Package> repo, String constraint, List<Package> ignore, List<String> initial) {
+	  	boolean isInstalled = false;
+	  	List<Package> current = new ArrayList<Package>();
+	  	if (!rep.getConflicts().isEmpty()) {	
+	  		for (String conflicts : rep.getConflicts())
+	  			checkConflicts(conflicts, repo, initial);
+	  	}
 		for (List<String> deps : rep.getDepends()) {
-			List<Package> current = new ArrayList<Package>();
-			//find smallest
 			for (String q : deps) {
-				Package add = dependencySearch(q,repo);
-				if (add!=null) {
-						current.add(add);
+				if (!q.equals(constraint)) {
+					Package add = dependencySearch(q,repo);
+					if (add!=null) {
+							current.add(add);
+					}
 				}
+				else {
+					for (Package loopPack : repo) {
+						if (loopPack.getName().equals(q)) {
+							for (List<String> loopDeps : loopPack.getDepends()) {
+								for (String loopDep : loopDeps) {
+									Package add = dependencySearch(loopDep,repo);
+									if (add!=null) {
+											current.add(add);
+									}
+								}
+							}
+							Package pack = (getSmallest(current, ignore));
+							ignore.add(pack);
+							install(loopPack, repo, constraint, ignore, initial);
+							}
+						}
+					}
 			}
 			if (!current.isEmpty()) {
-			install(installSmallest(current), repo);
+				install(getSmallest(current, ignore), repo, constraint, ignore, initial);
 			}
-		}
-		boolean isInstalled = false;
+		}	
 		for (Package installed : toInstall) {
 			if (installed.getName().equals(rep.getName()))
 			{
@@ -150,14 +145,38 @@ public class Main {
 			}
 		}
 		if (!isInstalled) {
-			toInstall.add(rep);
+    		for (Package loopRep : repo) {
+    			if (loopRep.getName().equals(constraint)) {
+    				if (!toInstall.contains(loopRep)) {
+    					toInstall.add(rep);
+    					break;
+    				}
+    			}
+    		}
 		}
   }
   
-  private static Package dependencySearch(String q, List<Package> p) {
+  private static void uninstall (Package rep, List<Package> repo) {
+	  toUninstall.add(rep);
+  }
+  
+  private static void initialPacks (List<Package> repo, List<String> initial) {
+	  for (String packs : initial) {
+			String[] qSplit = packs.split("=");
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1],"=")) {
+						initialPacks.add(rep);
+					}
+				}
+			}
+	  }
+  }
+  
+  private static Package dependencySearch(String q, List<Package> repo) {
 		if (q.contains(">=")) {
 			String[] qSplit = q.split(">=");
-			for (Package rep : p) {
+			for (Package rep : repo) {
 				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) >= Double.parseDouble(qSplit[1])) {
 					return rep;
 				}
@@ -165,39 +184,39 @@ public class Main {
 		}
 		if (q.contains("<=")) {
 			String[] qSplit = q.split("<=");
-			for (Package rep : p) {
+			for (Package rep : repo) {
 				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) <= Double.parseDouble(qSplit[1])) {
 					return rep;
 				}
 			}
 		}
-		if (q.contains("<")) {
+		if (q.contains("<") && !q.contains("<=")) {
 			String[] qSplit = q.split("<");
-			for (Package rep : p) {
-				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) >= Double.parseDouble(qSplit[1])) {
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) < Double.parseDouble(qSplit[1])) {
 					return rep;
 				}
 			}
 		}
-		if (q.contains(">")) {
+		if (q.contains(">") && !q.contains(">=")) {
 			String[] qSplit = q.split(">");
-			for (Package rep : p) {
-				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) >= Double.parseDouble(qSplit[1])) {
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) > Double.parseDouble(qSplit[1])) {
 					return rep;
 				}
 			}
 		}
 		if (q.contains("=")) {
 			String[] qSplit = q.split("=");
-			for (Package rep : p) {
-				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) >= Double.parseDouble(qSplit[1])) {
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0]) && Double.parseDouble(rep.getVersion()) == Double.parseDouble(qSplit[1])) {
 					return rep;
 				}
 			}
 		}
 		else {
 			String[] qSplit = {q,""};
-			for (Package rep : p) {
+			for (Package rep : repo) {
 				if (rep.getName().equals(qSplit[0])) {
 					return rep;
 				}
@@ -206,14 +225,161 @@ public class Main {
 		return null;
   }
   
-  private static Package installSmallest(List<Package> p) {
-	  Package smallest = p.get(0);
+  private static Package checkConflicts(String q, List<Package> repo, List<String> initial) {
+		if (q.contains(">=")) {
+			String[] qSplit = q.split(">=");
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1],"<=")) {
+						if (initialPacks.contains(rep)) {
+							uninstall(rep, repo);
+						}
+					}
+				}
+			}
+		}
+		if (q.contains("<=")) {
+			String[] qSplit = q.split("<=");
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1], "<=")) {
+						if (initialPacks.contains(rep)) {
+							uninstall(rep, repo);
+						}
+					}
+				}
+			}
+		}
+		if (q.contains("<") && !q.contains("<=")) {
+			String[] qSplit = q.split("<");
+			System.out.println(q);
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1],"<")) {
+						if (initialPacks.contains(rep)) {
+							uninstall(rep, repo);
+						}
+					}
+				}
+			}
+		}
+		if (q.contains(">") && !q.contains(">=")) {
+			String[] qSplit = q.split(">");
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1],">")) {
+						if (initialPacks.contains(rep)) {
+							uninstall(rep, repo);
+						}
+					}
+				}
+			}
+		}
+		if (q.contains("=")) {
+			String[] qSplit = q.split("=");
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (compareVersions(rep.getVersion(),qSplit[1],"=")) {
+						if (initialPacks.contains(rep)) {
+							uninstall(rep, repo);
+						}
+					}
+				}
+			}
+		}
+		else {
+			String[] qSplit = {q,""};
+			for (Package rep : repo) {
+				if (rep.getName().equals(qSplit[0])) {
+					if (initialPacks.contains(rep)) {
+						uninstall(rep, repo);
+					}
+				}
+			}
+		}
+		return null;
+  }
+  
+  private static boolean compareVersions(String rep, String q, String sign) {
+	  boolean b = false;
+	  boolean also = false;
+	  String[] s1 = rep.split("\\.");
+	  String[] s2 = q.split("\\.");
+	  if (sign.equals(">=")) {
+		  for (int pos = 0; pos < s1.length; pos++) {
+			    if (Integer.parseInt(s1[pos]) >= Integer.parseInt(s2[pos])) {
+			        also = true;
+			    }
+			    else {
+			    	if (!also) {
+			    		b = false;
+			    	}
+			    	else {
+			    		b = true;
+			    	}
+			    }
+			}
+	  }
+	  if (sign.equals("<=")) {
+		  for (int pos = 0; pos < s1.length; pos++) {
+			    if (Integer.parseInt(s1[pos]) <= Integer.parseInt(s2[pos])) {
+			        b = true;
+			    } else {
+			        b= false;
+			        break;
+			    }
+		  }
+	  }
+	  if (sign.equals(">")) {
+		  for (int pos = 0; pos < s1.length; pos++) {
+			    if (Integer.parseInt(s1[pos]) >= Integer.parseInt(s2[pos])) {
+			        b = true;
+			        break;
+			    }
+			    else {
+			    	b = false;
+			    }
+			}
+	  }
+	  if (sign.equals("<")) {
+		  for (int pos = 0; pos < s1.length; pos++) {
+			    if (Integer.parseInt(s1[pos]) < Integer.parseInt(s2[pos])) {
+			        b = true;
+			        break;
+			    } else {
+			        b= false;
+			    }
+		  }
+	  }
+	  if (sign.equals("=")) {
+		  for (int pos = 0; pos < s1.length; pos++) {
+			    if (Integer.parseInt(s1[pos]) == Integer.parseInt(s2[pos])) {
+			        b = true;
+			    } else {
+			        b= false;
+			    }
+			}
+	  }
+	  return b;
+	  
+  }
+  
+  private static Package getSmallest(List<Package> p, List<Package> ignore) {
+	  Package smallest = null;
+	  for (Package pack : p) {
+		  if (!ignore.contains(pack)) {
+			  smallest = pack;
+			  break;
+		  }
+	  }
 	  int smallestSize = smallest.getSize();
 	  if (p.size()>1) {
 		  for (Package current : p) {
-			  int size = current.getSize();
-			  if (size<smallestSize) {
-				  smallest = current;
+			  if (!ignore.contains(current)) {
+				  int size = current.getSize();
+				  if (size<smallestSize) {
+					  smallest = current;
+				  }
 			  }
 		  }
 	  }
